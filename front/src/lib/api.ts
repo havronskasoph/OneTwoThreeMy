@@ -1,4 +1,4 @@
-import { getIdToken, signOut } from "@/lib/auth"
+import { getIdToken } from "@/lib/auth"
 import type {
   Meeting,
   MeetingCreate,
@@ -35,7 +35,7 @@ function messageFrom(detail: unknown, status: number): string {
 const API_URL = (import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "")
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = await getIdToken()
+  const token = getIdToken()
   const response = await fetch(`${API_URL}/api${path}`, {
     ...init,
     headers: {
@@ -44,12 +44,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   })
-
-  // Session gone or rejected: back to the sign-in page.
-  if (response.status === 401) {
-    signOut()
-    window.location.assign("/")
-  }
 
   if (!response.ok) {
     let detail: unknown = response.statusText

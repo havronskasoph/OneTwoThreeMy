@@ -39,8 +39,9 @@ STACK_TAGS        := PROJECT_NAME=$(PROJECT)
 # accounts, or 3 free plans already in use).
 CLOUDFRONT_PLAN   ?= FREE
 
-# Optional custom domain for the frontend (`make aws-frontend-https`); empty = CloudFront domain only.
-FRONTEND_DOMAIN   ?= onetwothree.dobosevych.com
+# Optional custom domain for the frontend (`make aws-frontend-https`, or set it in .env); empty =
+# CloudFront domain only.
+FRONTEND_DOMAIN   ?=
 CERT_SH           := PROJECT_NAME=$(PROJECT) infra/scripts/cert.sh
 # Browser origins the API always allows besides the frontend's (local development).
 CORS_LOCAL        ?= http://localhost:3000,http://localhost:5173
@@ -64,7 +65,8 @@ cognito_output  = $(call stack_output,$(COGNITO_STACK),$(1))
 API_URL          = $(call backend_output,ApiUrl)
 FRONTEND_ORIGINS = $(call frontend_output,SiteOrigins)
 CORS_ORIGINS_AWS = $(CORS_LOCAL)$(if $(FRONTEND_ORIGINS),$(COMMA)$(FRONTEND_ORIGINS))
-# Cognito may redirect back (Google sign-in) to every origin the API allows.
+# Cognito's managed login may redirect back to every origin the API allows. These must match the
+# frontend's redirect_uri (lib/auth.ts) exactly.
 COGNITO_CALLBACK_URLS = $(subst $(COMMA),/auth/callback$(COMMA),$(CORS_ORIGINS_AWS))/auth/callback
 COGNITO_LOGOUT_URLS   = $(subst $(COMMA),/$(COMMA),$(CORS_ORIGINS_AWS))/
 COGNITO_POOL_ID   = $(call cognito_output,UserPoolId)
@@ -233,7 +235,8 @@ aws-backend-destroy: aws-check ## Delete backend stacks (a final Aurora snapshot
 .PHONY: aws-frontend-deploy
 aws-frontend-deploy: aws-check aws-frontend-stack aws-frontend-publish aws-frontend-cors ## Deploy frontend: stack, build with the API URL, upload, allow its origin in the API and Cognito
 	@echo
-	@echo "Site: $(call frontend_output,SiteUrl)"
+	@echo "Site:  $(call frontend_output,SiteUrl)"
+	@echo "Login: $(call frontend_output,SiteUrl)/login/"
 
 .PHONY: aws-frontend-stack
 aws-frontend-stack: ## Create/update the frontend stack (S3, CloudFront + WAF on the Free plan, custom domain once its certificate is issued)
@@ -253,7 +256,7 @@ aws-frontend-publish: ## Build the SPA with VITE_API_URL=<function URL>, upload 
 	(cd front && npm ci --no-audit --no-fund && VITE_API_URL="$$api" \
 	  VITE_COGNITO_REGION=$(AWS_REGION) VITE_COGNITO_USER_POOL_ID=$(COGNITO_POOL_ID) \
 	  VITE_COGNITO_CLIENT_ID=$(COGNITO_CLIENT) VITE_COGNITO_DOMAIN=$(call cognito_output,HostedUiDomain) \
-	  VITE_COGNITO_GOOGLE=$(call cognito_output,GoogleEnabled) npm run build) && \
+	  npm run build) && \
 	aws s3 sync front/dist "s3://$$bucket" --delete --exclude index.html \
 	  --cache-control "public,max-age=31536000,immutable" && \
 	aws s3 cp front/dist/index.html "s3://$$bucket/index.html" --cache-control "no-cache" && \
@@ -310,7 +313,7 @@ aws-frontend-https-check: ## Check that https://FRONTEND_DOMAIN answers
 	@echo "DNS: $$(dig +short $(FRONTEND_DOMAIN) | tr '\n' ' ')"
 	curl -fsS -o /dev/null -w "%{http_code} %{url_effective}\n" https://$(FRONTEND_DOMAIN)/
 
-##@ AWS auth (Cognito user pool; Google sign-in once GOOGLE_CLIENT_ID/SECRET are set in .env)
+##@ AWS auth (Cognito user pool with managed login: email + password and Google)
 
 .PHONY: aws-cognito-deploy
 aws-cognito-deploy: aws-check aws-cognito-stack aws-cognito-env ## Deploy Cognito, then print the lines to add to .env
@@ -318,9 +321,11 @@ aws-cognito-deploy: aws-check aws-cognito-stack aws-cognito-env ## Deploy Cognit
 
 .PHONY: aws-cognito-stack
 aws-cognito-stack: ## Create/update the Cognito stack (redirect URLs = local origins + the site's)
+	@test -n "$(GOOGLE_CLIENT_ID)" -a -n "$(GOOGLE_CLIENT_SECRET)" || { \
+	  echo "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env (\`make aws-cognito-google\` shows the URLs for Google Cloud)"; exit 1; }
 	$(call clear_failed_stack,$(COGNITO_STACK))
 	@# Not echoed: the command line would show the Google client secret.
-	@echo "Deploying $(COGNITO_STACK) (Google sign-in: $(if $(GOOGLE_CLIENT_ID),on,off))"
+	@echo "Deploying $(COGNITO_STACK)"
 	@aws cloudformation deploy --stack-name $(COGNITO_STACK) --template-file infra/cognito.yaml \
 	  --no-fail-on-empty-changeset --tags $(STACK_TAGS) \
 	  --parameter-overrides ProjectName=$(PROJECT) "CallbackUrls=$(COGNITO_CALLBACK_URLS)" \
@@ -337,11 +342,17 @@ aws-cognito-env: ## Print the .env lines for the deployed user pool (replace the
 	@echo "COGNITO_USER_POOL_ID=$(COGNITO_POOL_ID)"
 	@echo "COGNITO_CLIENT_ID=$(COGNITO_CLIENT)"
 	@echo "COGNITO_DOMAIN=$(call cognito_output,HostedUiDomain)"
-	@echo "COGNITO_GOOGLE_ENABLED=$(call cognito_output,GoogleEnabled)"
 	@echo
 
+.PHONY: aws-cognito-google
+aws-cognito-google: ## Print the origin and redirect URI to enter in the Google OAuth client
+	@domain="$(PROJECT)-$$(aws sts get-caller-identity --query Account --output text).auth.$(AWS_REGION).amazoncognito.com"; \
+	echo "Google Cloud > Google Auth Platform > Clients > Web application:"; \
+	echo "  Authorised JavaScript origin: https://$$domain"; \
+	echo "  Authorised redirect URI:      https://$$domain/oauth2/idpresponse"
+
 .PHONY: aws-cognito-outputs
-aws-cognito-outputs: ## Show Cognito stack outputs (pool, client, Hosted UI domain)
+aws-cognito-outputs: ## Show Cognito stack outputs (pool, client, managed login domain)
 	@aws cloudformation describe-stacks --stack-name $(COGNITO_STACK) \
 	  --query "Stacks[0].Outputs[].[OutputKey, OutputValue]" --output table
 

@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { toast } from "sonner"
 
+import { GoogleButton } from "@/components/auth/GoogleButton"
 import { BackToTop } from "@/components/BackToTop"
 import { DeleteMeetingDialog } from "@/components/DeleteMeetingDialog"
 import { MeetingFormDialog } from "@/components/MeetingFormDialog"
@@ -10,10 +11,18 @@ import { SiteHeader } from "@/components/SiteHeader"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useDeleteMeeting, useMeetings } from "@/hooks/useMeetings"
+import { useSession } from "@/lib/auth"
 import type { Meeting } from "@/types"
 
 export function HomePage() {
-  const { data: meetings, isPending, isError, error, refetch } = useMeetings()
+  const session = useSession()
+  const {
+    data: meetings,
+    isPending,
+    isError,
+    error,
+    refetch,
+  } = useMeetings(session.isAuthenticated)
   const deleteMeeting = useDeleteMeeting()
   const [formOpen, setFormOpen] = useState(false)
   const [formStart, setFormStart] = useState<Date | undefined>()
@@ -47,7 +56,24 @@ export function HomePage() {
         <section className="rounded-sm border bg-card p-3 sm:p-4">
           <h1 className="sr-only">Meetings</h1>
 
-          {isPending ? (
+          {!session.isAuthenticated ? (
+            session.isLoading ? (
+              <Skeleton className="h-[480px] w-full" aria-label="Loading" />
+            ) : (
+              <div className="mx-auto max-w-sm py-16 text-center">
+                <h2 className="text-xl font-semibold text-foreground">Sign in</h2>
+                <p className="mt-1.5 text-sm text-muted-foreground">
+                  Sign in to see your meetings.
+                </p>
+                <Button className="mt-6 h-10 w-full" onClick={() => void session.signIn()}>
+                  Sign in with email
+                </Button>
+                <div className="mt-3">
+                  <GoogleButton label="Continue with Google" />
+                </div>
+              </div>
+            )
+          ) : isPending ? (
             <div className="space-y-2" aria-label="Loading meetings">
               <Skeleton className="h-9 w-full" />
               <Skeleton className="h-[480px] w-full" />

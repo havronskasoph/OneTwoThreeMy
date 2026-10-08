@@ -5,8 +5,8 @@ import type { Meeting } from "@/types"
 
 export const meetingsKey = ["meetings"] as const
 
-export function useMeetings() {
-  return useQuery({ queryKey: meetingsKey, queryFn: api.listMeetings })
+export function useMeetings(enabled = true) {
+  return useQuery({ queryKey: meetingsKey, queryFn: api.listMeetings, enabled })
 }
 
 export function useCreateMeeting() {

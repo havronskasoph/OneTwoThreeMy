@@ -1,17 +1,21 @@
 import type { ReactElement } from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render } from "@testing-library/react"
+import { AuthProvider } from "react-oidc-context"
 import { MemoryRouter } from "react-router"
 import { vi } from "vitest"
 
+import { authEnabled, oidcSettings } from "@/lib/auth"
 import type { Meeting, User } from "@/types"
 
 export function renderWithQuery(ui: ReactElement, route = "/") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[route]}>{ui}</MemoryRouter>
-    </QueryClientProvider>,
+    <AuthProvider {...oidcSettings()} skipSigninCallback={!authEnabled()}>
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={[route]}>{ui}</MemoryRouter>
+      </QueryClientProvider>
+    </AuthProvider>,
   )
 }
 
@@ -21,13 +25,6 @@ export const sampleUser: User = {
   id: "5d1e0c7a-2b3f-4c8d-9e0f-1a2b3c4d5e04",
   email: "anna@example.com",
   name: "Anna Kovalenko",
-}
-
-/** A stored session, as after signing in (with auth disabled, as in tests by default). */
-export function signInForTest(
-  session: object = { idToken: "", expiresAt: Number.MAX_SAFE_INTEGER },
-) {
-  localStorage.setItem("meetings.session", JSON.stringify(session))
 }
 
 /** Replaces global fetch; returns the mock so tests can inspect calls. `/api/me` always

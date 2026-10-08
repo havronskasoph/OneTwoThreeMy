@@ -1,8 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  Meetings App - Cognito user pool for sign-in with email and password (self sign-up, email
-  verification), a public app client for the SPA, a Hosted UI domain for OAuth, and Google as an
-  optional identity provider that is created only when GoogleClientId is set.
+  Meetings App - Cognito user pool (Essentials tier) with managed login: sign-up and sign-in with
+  email and password (self sign-up, email verification) and with Google, a public app client for
+  the SPA (authorization code + PKCE), and a prefix domain for the managed login pages.
 
 Parameters:
   ProjectName:
@@ -12,29 +12,30 @@ Parameters:
   CallbackUrls:
     Type: CommaDelimitedList
     Default: http://localhost:3000/auth/callback,http://localhost:5173/auth/callback
-    Description: Where the Hosted UI may send users back after Google sign-in (the Makefile adds the site's).
+    Description: Where managed login may send users back after sign-in (the Makefile adds the site's).
   LogoutUrls:
     Type: CommaDelimitedList
     Default: http://localhost:3000/,http://localhost:5173/
-    Description: Where the Hosted UI may send users after signing out.
+    Description: Where managed login may send users after signing out.
   GoogleClientId:
     Type: String
-    Default: ""
-    Description: OAuth client ID from Google Cloud. Empty = Google sign-in is not set up.
+    MinLength: 1
+    Description: >-
+      OAuth client ID (type Web application) from Google Cloud, with the redirect URI
+      https://<domain prefix>.auth.<region>.amazoncognito.com/oauth2/idpresponse.
   GoogleClientSecret:
     Type: String
-    Default: ""
+    MinLength: 1
     NoEcho: true
-    Description: OAuth client secret from Google Cloud (required with GoogleClientId).
-
-Conditions:
-  GoogleEnabled: !Not [!Equals [!Ref GoogleClientId, ""]]
+    Description: OAuth client secret from Google Cloud (kept in .env, never in the repository).
 
 Resources:
   UserPool:
     Type: AWS::Cognito::UserPool
     Properties:
       UserPoolName: !Sub ${ProjectName}-users
+      # Managed login needs Essentials; the first 10,000 monthly active users are free.
+      UserPoolTier: ESSENTIALS
       UserPoolTags:
         PROJECT_NAME: !Ref ProjectName
       # Users sign in with their email; Cognito sends a code to verify it on sign-up.
@@ -62,17 +63,17 @@ Resources:
         - { Name: email, AttributeDataType: String, Required: true, Mutable: true }
         - { Name: name, AttributeDataType: String, Required: false, Mutable: true }
 
-  # Hosted UI / OAuth endpoints, needed for federated sign-in (Google). The prefix must be unique
-  # across AWS, hence the account ID.
+  # Managed login pages and OAuth endpoints at https://<prefix>.auth.<region>.amazoncognito.com.
+  # The prefix must be unique across AWS, hence the account ID.
   UserPoolDomain:
     Type: AWS::Cognito::UserPoolDomain
     Properties:
       UserPoolId: !Ref UserPool
       Domain: !Sub ${ProjectName}-${AWS::AccountId}
+      ManagedLoginVersion: 2
 
   GoogleIdentityProvider:
     Type: AWS::Cognito::UserPoolIdentityProvider
-    Condition: GoogleEnabled
     Properties:
       UserPoolId: !Ref UserPool
       ProviderName: Google
@@ -86,16 +87,17 @@ Resources:
         email_verified: email_verified
         name: name
 
-  # Public client (no secret): the browser talks to Cognito directly. The backend only verifies
-  # the ID tokens it receives.
+  # Public client (no secret): a browser cannot keep one, so the code flow is protected with PKCE.
+  # The backend only verifies the ID tokens it receives.
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
+    # A client naming a provider that does not exist yet fails to create.
+    DependsOn: GoogleIdentityProvider
     Properties:
       ClientName: !Sub ${ProjectName}-web
       UserPoolId: !Ref UserPool
       GenerateSecret: false
       ExplicitAuthFlows:
-        - ALLOW_USER_PASSWORD_AUTH
         - ALLOW_USER_SRP_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
       PreventUserExistenceErrors: ENABLED
@@ -107,16 +109,20 @@ Resources:
         IdToken: minutes
         AccessToken: minutes
         RefreshToken: days
-      # Referencing the provider makes the client wait for it when Google is enabled.
-      SupportedIdentityProviders: !If
-        - GoogleEnabled
-        - [COGNITO, !Ref GoogleIdentityProvider]
-        - [COGNITO]
+      SupportedIdentityProviders: [COGNITO, Google]
       AllowedOAuthFlowsUserPoolClient: true
       AllowedOAuthFlows: [code]
       AllowedOAuthScopes: [openid, email, profile]
       CallbackURLs: !Ref CallbackUrls
       LogoutURLs: !Ref LogoutUrls
+
+  # Without a style, a version 2 domain has no sign-in page to show; use Cognito's default look.
+  ManagedLoginBranding:
+    Type: AWS::Cognito::ManagedLoginBranding
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientId: !Ref UserPoolClient
+      UseCognitoProvidedValues: true
 
 Outputs:
   UserPoolId:
@@ -129,7 +135,8 @@ Outputs:
     Description: Issuer (iss) of the pool's tokens; its JWKS is at <Issuer>/.well-known/jwks.json.
     Value: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
   HostedUiDomain:
-    Description: Domain of the Hosted UI / OAuth endpoints.
+    Description: Domain of the managed login pages and OAuth endpoints.
     Value: !Sub ${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com
-  GoogleEnabled:
-    Value: !If [GoogleEnabled, "true", "false"]
+  GoogleRedirectUri:
+    Description: Authorised redirect URI for the Google OAuth client.
+    Value: !Sub https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse

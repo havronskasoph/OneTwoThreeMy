@@ -3,7 +3,7 @@ import { CalendarDays } from "lucide-react"
 const COLUMNS = [
   {
     title: "Meetings",
-    links: [{ label: "All meetings", href: "/home" }],
+    links: [{ label: "All meetings", href: "/" }],
   },
 ]
 

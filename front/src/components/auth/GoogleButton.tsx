@@ -1,7 +1,7 @@
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
-import { googleEnabled, startGoogleSignIn } from "@/lib/auth"
+import { useSession } from "@/lib/auth"
 
 function GoogleIcon() {
   return (
@@ -26,38 +26,14 @@ function GoogleIcon() {
   )
 }
 
-/** Starts Google sign-in through Cognito; disabled until Google is set up in the user pool. */
+/** Goes straight to Google through Cognito, skipping Cognito's own sign-in page. */
 export function GoogleButton({ label }: { label: string }) {
-  const enabled = googleEnabled()
+  const { signInWithGoogle } = useSession()
   const start = () =>
-    startGoogleSignIn().catch(() => toast.error("Could not start Google sign-in, try again"))
+    signInWithGoogle().catch(() => toast.error("Could not start Google sign-in, try again"))
   return (
-    <div>
-      <Button
-        type="button"
-        variant="outline"
-        className="h-10 w-full gap-2.5"
-        onClick={start}
-        disabled={!enabled}
-        aria-describedby={enabled ? undefined : "google-soon"}
-      >
-        <GoogleIcon /> {label}
-      </Button>
-      {!enabled && (
-        <p id="google-soon" className="mt-1.5 text-center text-xs text-muted-foreground">
-          Google sign-in is coming soon.
-        </p>
-      )}
-    </div>
-  )
-}
-
-export function OrDivider() {
-  return (
-    <div className="my-6 flex items-center gap-3 text-xs tracking-wide text-muted-foreground uppercase">
-      <span className="h-px flex-1 bg-border" />
-      or
-      <span className="h-px flex-1 bg-border" />
-    </div>
+    <Button type="button" variant="outline" className="h-10 w-full gap-2.5" onClick={start}>
+      <GoogleIcon /> {label}
+    </Button>
   )
 }

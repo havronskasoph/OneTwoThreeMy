@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     # when empty it is downloaded from the issuer on first use.
     cognito_jwks: str = ""
 
+    # Weekly report (app.reports): weeks run Monday to Sunday in this time zone.
+    report_timezone: str = "Europe/Kyiv"
+    # Bucket the report builder Lambda writes reports/<week>.csv to (infra/reports.yaml sets it).
+    reports_bucket: str = ""
+    # Lab exercise "break it": the builder raises for this week, so its message ends in the DLQ.
+    report_fail_week: str = ""
+
     @property
     def sqlalchemy_url(self) -> URL:
         if self.database_url:

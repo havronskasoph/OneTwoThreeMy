@@ -32,6 +32,7 @@ BACKEND_FUNCTION  := $(PROJECT)-backend
 BACKEND_PARAMS    := infra/backend.params.env
 FRONTEND_STACK    := $(PROJECT)-frontend
 COGNITO_STACK     := $(PROJECT)-cognito
+REPORTS_STACK     := $(PROJECT)-reports
 # Every resource gets this tag (in the templates and as a stack tag).
 STACK_TAGS        := PROJECT_NAME=$(PROJECT)
 
@@ -62,6 +63,7 @@ BACKEND_PARAMS_ARGS = $(shell [ -f $(BACKEND_PARAMS) ] && grep -v -e '^[[:space:
 backend_output  = $(call stack_output,$(BACKEND_STACK),$(1))
 frontend_output = $(call stack_output,$(FRONTEND_STACK),$(1))
 cognito_output  = $(call stack_output,$(COGNITO_STACK),$(1))
+reports_output  = $(call stack_output,$(REPORTS_STACK),$(1))
 API_URL          = $(call backend_output,ApiUrl)
 FRONTEND_ORIGINS = $(call frontend_output,SiteOrigins)
 CORS_ORIGINS_AWS = $(CORS_LOCAL)$(if $(FRONTEND_ORIGINS),$(COMMA)$(FRONTEND_ORIGINS))
@@ -362,13 +364,104 @@ aws-cognito-destroy: aws-check ## Delete the Cognito stack — ALL user accounts
 	aws cloudformation delete-stack --stack-name $(COGNITO_STACK)
 	aws cloudformation wait stack-delete-complete --stack-name $(COGNITO_STACK)
 
+##@ AWS weekly report (EventBridge Scheduler -> SQS -> builder Lambda -> S3 -> mailer Lambda -> SES)
+
+# Where the report goes (set REPORT_EMAIL in .env); several addresses: comma-separated.
+REPORT_EMAIL     ?=
+# Optional: send as reports@<domain> (needs DKIM records); empty = send from REPORT_EMAIL.
+REPORT_DOMAIN    ?=
+REPORT_SCHEDULE  ?= cron(0 7 ? * MON *)
+# Lab "break it" exercise: the builder raises for this week.
+REPORT_FAIL_WEEK ?=
+# ISO week for report-now / report-local, e.g. 2026-W39; empty = the previous week.
+WEEK             ?=
+
+.PHONY: aws-reports-deploy
+aws-reports-deploy: aws-check aws-reports-stack aws-reports-outputs ## Deploy the weekly report stack (deploy the backend first: the builder runs its image)
+	@echo "Confirm the SES verification email sent to $(firstword $(subst $(COMMA), ,$(REPORT_EMAIL))), then: make report-now WEEK=<week>"
+
+.PHONY: aws-reports-stack
+aws-reports-stack: ## Create/update the reports stack (REPORT_SCHEDULE='rate(5 minutes)' to test the schedule)
+	@test -n "$(REPORT_EMAIL)" || { echo "Set REPORT_EMAIL in .env (the inbox the report is emailed to)"; exit 1; }
+	@test -n "$(call backend_output,PrivateRouteTableId)" || { echo "Backend stack has no reports outputs: run \`make aws-backend-deploy\` first"; exit 1; }
+	$(call clear_failed_stack,$(REPORTS_STACK))
+	aws cloudformation deploy --stack-name $(REPORTS_STACK) --template-file infra/reports.yaml \
+	  --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --tags $(STACK_TAGS) \
+	  --parameter-overrides ProjectName=$(PROJECT) \
+	    ImageUri=$(call backend_output,ImageUri) Architecture=$(call backend_output,Architecture) \
+	    VpcId=$(call backend_output,VpcId) SubnetIds=$(call backend_output,PrivateSubnetIds) \
+	    SecurityGroupId=$(call backend_output,BackendSecurityGroupId) \
+	    RouteTableId=$(call backend_output,PrivateRouteTableId) \
+	    DbHost=$(call backend_output,DbEndpoint) DbPort=$(call backend_output,DbPort) \
+	    DbName=$(call backend_output,DbName) DbUsername=$(call backend_output,DbUsername) \
+	    DbSecretArn=$(call backend_output,DbSecretArn) \
+	    "ReportRecipients=$(REPORT_EMAIL)" "SenderDomain=$(REPORT_DOMAIN)" \
+	    "ScheduleExpression=$(REPORT_SCHEDULE)" "FailWeek=$(REPORT_FAIL_WEEK)"
+
+.PHONY: aws-reports-outputs
+aws-reports-outputs: ## Show reports stack outputs (bucket, queues, DKIM records)
+	@aws cloudformation describe-stacks --stack-name $(REPORTS_STACK) \
+	  --query "Stacks[0].Outputs[].[OutputKey, OutputValue]" --output table
+
+.PHONY: report-now
+report-now: ## Ask for a report now: an SQS message for WEEK (e.g. WEEK=2026-W39; empty = last week)
+	@url="$(call reports_output,QueueUrl)"; \
+	[ -n "$$url" ] || { echo "Reports stack not found: run \`make aws-reports-deploy\` first"; exit 1; }; \
+	body='{"week": $(if $(WEEK),"$(WEEK)",null), "source": "make"}'; \
+	echo "Sending $$body"; \
+	aws sqs send-message --queue-url "$$url" --message-body "$$body" --query MessageId --output text
+
+.PHONY: report-local
+report-local: ## Print WEEK's report built from the local compose database (needs `make start`)
+	docker compose exec -T backend python -m app.reports.weekly $(WEEK)
+
+.PHONY: report-ls
+report-ls: ## List the reports in the bucket
+	aws s3 ls s3://$(call reports_output,BucketName)/reports/ --recursive
+
+.PHONY: report-logs
+report-logs: ## Show the builder's and the mailer's logs of the last hour
+	@for fn in report-builder report-mailer; do \
+	  echo "== $$fn"; aws logs tail /aws/lambda/$(PROJECT)-$$fn --since 1h --format short; \
+	done
+
+.PHONY: report-triggers
+report-triggers: ## The "triggered" log lines of both functions (last 7 days): one per schedule, SQS message and S3 upload
+	@for fn in report-builder report-mailer; do \
+	  aws logs filter-log-events --log-group-name /aws/lambda/$(PROJECT)-$$fn \
+	    --start-time $$(( ($$(date +%s) - 7*86400) * 1000 )) --filter-pattern '"triggered"' \
+	    --query 'events[].message' --output text | tr '\t' '\n'; \
+	done
+
+.PHONY: report-queues
+report-queues: ## Messages waiting in the queue and in the dead-letter queue
+	@for url in "$(call reports_output,QueueUrl)" "$(call reports_output,DlqUrl)"; do \
+	  printf "%-50s " "$${url##*/}"; \
+	  aws sqs get-queue-attributes --queue-url "$$url" \
+	    --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible \
+	    --query 'Attributes.[ApproximateNumberOfMessages, ApproximateNumberOfMessagesNotVisible]' \
+	    --output text | awk '{print "waiting=" $$1 "  in flight=" $$2}'; \
+	done
+
+.PHONY: report-redrive
+report-redrive: ## Move the messages in the dead-letter queue back to the queue (after fixing the cause)
+	aws sqs start-message-move-task --source-arn $(call reports_output,DlqArn) \
+	  --destination-arn $(call reports_output,QueueArn)
+
+.PHONY: aws-reports-destroy
+aws-reports-destroy: aws-check ## Empty the reports bucket and delete the reports stack
+	@read -p "Delete stack $(REPORTS_STACK) and all reports in $(AWS_REGION)? [y/N] " ok && [ "$$ok" = y ]
+	@bucket="$(call reports_output,BucketName)"; [ -z "$$bucket" ] || aws s3 rm "s3://$$bucket" --recursive --quiet
+	aws cloudformation delete-stack --stack-name $(REPORTS_STACK)
+	aws cloudformation wait stack-delete-complete --stack-name $(REPORTS_STACK)
+
 ##@ AWS (all parts)
 
 .PHONY: aws-deploy
 aws-deploy: aws-cognito-deploy aws-backend-deploy aws-frontend-deploy ## Deploy everything: Cognito, backend, then the frontend built with their IDs and URL
 
 .PHONY: aws-destroy
-aws-destroy: aws-frontend-destroy aws-backend-destroy aws-cognito-destroy ## Delete everything on AWS (each stack asks first)
+aws-destroy: aws-reports-destroy aws-frontend-destroy aws-backend-destroy aws-cognito-destroy ## Delete everything on AWS (each stack asks first)
 
 ##@ Help
 

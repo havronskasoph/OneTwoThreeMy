@@ -130,6 +130,29 @@ Resources:
         - Key: PROJECT_NAME
           Value: !Ref ProjectName
 
+  # An explicit route table (local routes only) so other stacks can attach gateway endpoints to it;
+  # the VPC's implicit main route table cannot be referenced from a template.
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - { Key: Name, Value: !Sub "${ProjectName}-private" }
+        - Key: PROJECT_NAME
+          Value: !Ref ProjectName
+
+  PrivateSubnet1RouteTable:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTable:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
   # --- Security groups ---
   BackendSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -327,3 +350,22 @@ Outputs:
   DbSecretArn:
     Description: Secrets Manager secret with the database master credentials.
     Value: !Ref DbSecret
+  # Used by infra/reports.yaml (the report builder runs the same image in the same network).
+  DbPort:
+    Value: !GetAtt DbCluster.Endpoint.Port
+  DbName:
+    Value: !Ref DbName
+  DbUsername:
+    Value: !Ref DbUsername
+  ImageUri:
+    Value: !Ref ImageUri
+  Architecture:
+    Value: !Ref Architecture
+  VpcId:
+    Value: !Ref Vpc
+  PrivateSubnetIds:
+    Value: !Join [",", [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
+  PrivateRouteTableId:
+    Value: !Ref PrivateRouteTable
+  BackendSecurityGroupId:
+    Value: !Ref BackendSecurityGroup

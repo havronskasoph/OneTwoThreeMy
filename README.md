@@ -33,6 +33,7 @@ back/             # FastAPI + SQLAlchemy 2 + Alembic
     schemas.py    # Pydantic request/response models
     services/     # business logic
     routers/      # /api/meetings, /api/participants, /api/health
+    reports/      # weekly meetings report (CSV) and its builder Lambda handler
   alembic/        # migrations (run on container start; on AWS via `make aws-backend-migrate`)
   Dockerfile.lambda # AWS Lambda image
   tests/
@@ -155,6 +156,7 @@ Everything is deployed to **us-east-1**. CloudFront accepts custom-domain certif
 - `infra/backend-ecr.yaml`: ECR repository for the backend's Lambda container image (`back/Dockerfile.lambda`).
 - `infra/backend.yaml`: VPC with private subnets, Aurora Serverless v2 PostgreSQL (scales to 0 ACU when idle), and a Lambda function with a public **function URL**, which is the backend URL.
 - `infra/frontend.yaml`: private S3 bucket and CloudFront distribution for the SPA on the **flat-rate Free plan** ($0/month, with the WAF web ACL the plan requires), with an optional custom domain.
+- `infra/reports.yaml`: the weekly meetings report. EventBridge Scheduler → SQS (with a DLQ) → builder Lambda (backend image, in the VPC) → S3 via a gateway endpoint → mailer Lambda → SES. `make aws-reports-deploy`, `make report-now WEEK=2026-W40`; see [docs/weekly-report.md](docs/weekly-report.md).
 
 Every resource carries the tag `PROJECT_NAME=<project>`. It is set in the templates and as a stack tag, and `cert.sh` puts it on the ACM certificate. Some resource types can't be tagged in AWS at all: function URLs, Lambda permissions, the bucket policy, the CloudFront origin access control, Route 53 records and the pricing plan subscription.
 

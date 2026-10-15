@@ -13,6 +13,8 @@ dependencies = [
     "pydantic-settings>=2.3",
     "mangum>=0.19",
     "pyjwt[crypto]>=2.9",
+    # Time zone data for zoneinfo: the Lambda base image has no system tz database.
+    "tzdata>=2024.1",
 ]
 
 [dependency-groups]

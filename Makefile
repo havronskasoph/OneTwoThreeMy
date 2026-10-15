@@ -18,6 +18,8 @@ PROJECT     ?= meetings
 AWS_REGION  := us-east-1
 export AWS_REGION
 export AWS_DEFAULT_REGION := $(AWS_REGION)
+# Print AWS CLI output directly instead of opening it in a pager (less).
+export AWS_PAGER :=
 
 # arm64 (Graviton, cheaper; native on Apple Silicon) or amd64
 ARCH        ?= arm64

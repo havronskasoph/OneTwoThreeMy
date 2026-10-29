@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import Meeting, Participant, User
-from app.schemas import MeetingCreate
+from app.schemas import AgendaSave, MeetingCreate
 from app.services.errors import NotFoundError
 
 # Meetings are personal: every query is scoped to the owner's user ID.
@@ -67,6 +67,15 @@ def create_meeting(db: Session, data: MeetingCreate, user: User) -> Meeting:
 def update_meeting(db: Session, meeting_id: UUID, data: MeetingCreate, user: User) -> Meeting:
     meeting = get_meeting(db, meeting_id, user)
     _apply(meeting, data, _load_participants(db, data.participant_ids))
+    db.commit()
+    return get_meeting(db, meeting.id, user)
+
+
+def save_agenda(db: Session, meeting_id: UUID, data: AgendaSave, user: User) -> Meeting:
+    """The model never writes: this is the only way an agenda is saved, suggested or typed."""
+    meeting = get_meeting(db, meeting_id, user)
+    meeting.agenda = data.agenda.model_dump(mode="json")
+    meeting.agenda_ai_suggestion = data.ai_suggestion.model_dump(mode="json") if data.ai_suggestion else None
     db.commit()
     return get_meeting(db, meeting.id, user)
 

@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import date, datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import (
@@ -87,6 +88,52 @@ class MeetingCreate(BaseModel):
         return self
 
 
+class AgendaItem(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    topic: str = Field(min_length=1, max_length=200)
+    owner: str | None = Field(default=None, max_length=254)
+    minutes: int | None = Field(default=None, ge=1, le=480)
+
+    @field_validator("owner", mode="before")
+    @classmethod
+    def blank_to_none(cls, value: object) -> object:
+        return _blank_to_none(value)
+
+
+class ActionItem(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    task: str = Field(min_length=1, max_length=500)
+    owner: str | None = Field(default=None, max_length=254)
+    due: date | None = None
+
+    @field_validator("owner", "due", mode="before")
+    @classmethod
+    def blank_to_none(cls, value: object) -> object:
+        return _blank_to_none(value)
+
+
+class Agenda(BaseModel):
+    items: list[AgendaItem] = Field(min_length=1, max_length=50)
+    action_items: list[ActionItem] = Field(default=[], max_length=50)
+
+
+class AiSuggestion(BaseModel):
+    """What the parser suggested, stored as-is next to what the user saved."""
+
+    agenda: dict[str, Any]
+    model: str = Field(min_length=1, max_length=100)
+    prompt_version: str = Field(min_length=1, max_length=50)
+    # The pasted text, so a new prompt version can be evaluated on the same inputs later.
+    input_text: str | None = Field(default=None, max_length=10_000)
+
+
+class AgendaSave(BaseModel):
+    agenda: Agenda
+    ai_suggestion: AiSuggestion | None = None
+
+
 class MeetingRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -99,4 +146,5 @@ class MeetingRead(BaseModel):
     ends_at: datetime
     owner_id: UUID | None
     participants: list[ParticipantRead]
+    agenda: Agenda | None
     created_at: datetime

@@ -34,6 +34,7 @@ back/             # FastAPI + SQLAlchemy 2 + Alembic
     services/     # business logic
     routers/      # /api/meetings, /api/participants, /api/health
     reports/      # weekly meetings report (CSV) and its builder Lambda handler
+    ai/           # Paste an agenda: Claude-on-Bedrock parser and its Lambda handler
   alembic/        # migrations (run on container start; on AWS via `make aws-backend-migrate`)
   Dockerfile.lambda # AWS Lambda image
   tests/
@@ -41,14 +42,15 @@ front/            # Vite + React + TypeScript + Tailwind + shadcn/ui
   src/
     pages/        # HomePage (/, the calendar once signed in), LoginPage (/login/, redirects to
                   # Cognito's managed login), AuthCallbackPage (/auth/callback, back from Cognito)
-    components/   # MeetingsCalendar, MeetingFormDialog, DeleteMeetingDialog, ParticipantsMultiSelect
+    components/   # MeetingsCalendar, MeetingFormDialog, AgendaDialog, DeleteMeetingDialog, ParticipantsMultiSelect
     components/ui # generated shadcn components
     hooks/        # TanStack Query hooks
     lib/calendar.ts # date helpers and the overlap layout for the calendar
     lib/auth.ts   # react-oidc-context settings for Cognito, session hook, ID token, sign-out URL
     lib/api.ts    # typed fetch wrapper (VITE_API_URL = backend origin, empty = same origin)
+    lib/parser.ts # agenda parser client (VITE_PARSER_URL; empty = Paste an agenda hidden)
   nginx.conf      # serves the SPA, proxies /api to backend
-infra/            # CloudFormation: cognito, backend-ecr, backend (Lambda + Aurora), frontend (S3 + CloudFront)
+infra/            # CloudFormation: cognito, backend-ecr, backend (Lambda + Aurora), frontend (S3 + CloudFront), reports, ai
 ```
 
 ## API
@@ -63,6 +65,7 @@ infra/            # CloudFormation: cognito, backend-ecr, backend (Lambda + Auro
 | POST | `/api/meetings` | Create a meeting |
 | PUT | `/api/meetings/{id}` | Replace a meeting (same body as POST) |
 | DELETE | `/api/meetings/{id}` | Delete a meeting |
+| PUT | `/api/meetings/{id}/agenda` | Save the agenda (`items`, `action_items`), optionally with the `ai_suggestion` it started from |
 | GET | `/api/participants?q=` | List/search participants |
 | POST | `/api/participants` | Create a participant (409 on duplicate email) |
 | DELETE | `/api/participants/{id}` | Delete a participant |
@@ -156,6 +159,7 @@ Everything is deployed to **us-east-1**. CloudFront accepts custom-domain certif
 - `infra/backend-ecr.yaml`: ECR repository for the backend's Lambda container image (`back/Dockerfile.lambda`).
 - `infra/backend.yaml`: VPC with private subnets, Aurora Serverless v2 PostgreSQL (scales to 0 ACU when idle), and a Lambda function with a public **function URL**, which is the backend URL.
 - `infra/frontend.yaml`: private S3 bucket and CloudFront distribution for the SPA on the **flat-rate Free plan** ($0/month, with the WAF web ACL the plan requires), with an optional custom domain.
+- `infra/ai.yml`: Paste an agenda. The agenda-parser Lambda (backend image, outside the VPC) behind a Cognito-authenticated function URL calls Claude on Amazon Bedrock and returns a suggested agenda; saving goes through the API. Plus a $5/month AWS Budgets alarm. `make llm-hello`, `make parse TEXT="…"`, `make aws-ai-deploy`, `make ai-logs`; see [docs/ai-agenda.md](docs/ai-agenda.md) and [ADR 0006](docs/adr/0006-llm-agenda-parsing.md).
 - `infra/reports.yaml`: the weekly meetings report. EventBridge Scheduler → SQS (with a DLQ) → builder Lambda (backend image, in the VPC) → S3 via a gateway endpoint → mailer Lambda → SES. `make aws-reports-deploy`, `make report-now WEEK=2026-W40`; see [docs/weekly-report.md](docs/weekly-report.md).
 
 Every resource carries the tag `PROJECT_NAME=<project>`. It is set in the templates and as a stack tag, and `cert.sh` puts it on the ACM certificate. Some resource types can't be tagged in AWS at all: function URLs, Lambda permissions, the bucket policy, the CloudFront origin access control, Route 53 records and the pricing plan subscription.
@@ -168,6 +172,10 @@ flowchart LR
     URL --> L[Lambda<br/>FastAPI via Mangum<br/>private subnets]
     L -->|:5432| DB[(Aurora Serverless v2<br/>PostgreSQL, private subnets)]
     L -. image .-> ECR[ECR]
+    B -->|"HTTPS, CORS: parse pasted text"| PURL[Parser function URL]
+    PURL --> PL[Agenda parser Lambda<br/>outside the VPC]
+    PL -->|Messages API| BR[Amazon Bedrock<br/>Claude]
+    PL -. image .-> ECR
 ```
 
 1. Put credentials into `.env` (an IAM user or role allowed to use CloudFormation, EC2/VPC, Lambda, ECR, RDS, Secrets Manager, S3, CloudFront, WAF, Pricing Plan Manager, ACM, Route 53, IAM and CloudWatch Logs):

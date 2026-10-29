@@ -35,6 +35,7 @@ BACKEND_PARAMS    := infra/backend.params.env
 FRONTEND_STACK    := $(PROJECT)-frontend
 COGNITO_STACK     := $(PROJECT)-cognito
 REPORTS_STACK     := $(PROJECT)-reports
+AI_STACK          := $(PROJECT)-ai
 # Every resource gets this tag (in the templates and as a stack tag).
 STACK_TAGS        := PROJECT_NAME=$(PROJECT)
 
@@ -66,6 +67,7 @@ backend_output  = $(call stack_output,$(BACKEND_STACK),$(1))
 frontend_output = $(call stack_output,$(FRONTEND_STACK),$(1))
 cognito_output  = $(call stack_output,$(COGNITO_STACK),$(1))
 reports_output  = $(call stack_output,$(REPORTS_STACK),$(1))
+ai_output       = $(call stack_output,$(AI_STACK),$(1))
 API_URL          = $(call backend_output,ApiUrl)
 FRONTEND_ORIGINS = $(call frontend_output,SiteOrigins)
 CORS_ORIGINS_AWS = $(CORS_LOCAL)$(if $(FRONTEND_ORIGINS),$(COMMA)$(FRONTEND_ORIGINS))
@@ -147,7 +149,7 @@ test-front: ## Frontend tests
 lint: ## Code style checks (same as CI)
 	cd back && uv run ruff check . && uv run ruff format --check .
 	cd front && npm run lint && npm run format:check && npm run typecheck
-	uvx cfn-lint infra/*.yaml
+	uvx cfn-lint infra/*.yaml infra/*.yml
 
 .PHONY: format
 format: ## Auto-format backend and frontend
@@ -260,7 +262,7 @@ aws-frontend-publish: ## Build the SPA with VITE_API_URL=<function URL>, upload 
 	(cd front && npm ci --no-audit --no-fund && VITE_API_URL="$$api" \
 	  VITE_COGNITO_REGION=$(AWS_REGION) VITE_COGNITO_USER_POOL_ID=$(COGNITO_POOL_ID) \
 	  VITE_COGNITO_CLIENT_ID=$(COGNITO_CLIENT) VITE_COGNITO_DOMAIN=$(call cognito_output,HostedUiDomain) \
-	  npm run build) && \
+	  VITE_PARSER_URL="$(call ai_output,ParserUrl)" npm run build) && \
 	aws s3 sync front/dist "s3://$$bucket" --delete --exclude index.html \
 	  --cache-control "public,max-age=31536000,immutable" && \
 	aws s3 cp front/dist/index.html "s3://$$bucket/index.html" --cache-control "no-cache" && \
@@ -271,6 +273,7 @@ aws-frontend-publish: ## Build the SPA with VITE_API_URL=<function URL>, upload 
 aws-frontend-cors: ## Allow the frontend's origins in the backend's CORS settings and as Cognito redirect URLs (keeps the current image)
 	@$(MAKE) --no-print-directory aws-backend-stack KEEP_IMAGE=1
 	@$(MAKE) --no-print-directory aws-cognito-stack
+	@[ -z "$(call ai_output,ParserUrl)" ] || $(MAKE) --no-print-directory aws-ai-stack
 
 .PHONY: aws-frontend-outputs
 aws-frontend-outputs: ## Show frontend stack outputs (site URL, bucket, distribution)
@@ -457,13 +460,70 @@ aws-reports-destroy: aws-check ## Empty the reports bucket and delete the report
 	aws cloudformation delete-stack --stack-name $(REPORTS_STACK)
 	aws cloudformation wait stack-delete-complete --stack-name $(REPORTS_STACK)
 
+##@ AI: Paste an agenda (Claude on Amazon Bedrock; function URL outside the VPC)
+
+# Bedrock model ID of the parser (Opus 5.5, Sonnet 5.5 or Haiku 5.5), locally and on AWS.
+PARSER_MODEL ?= anthropic.claude-opus-5-5
+# Where the $5/month budget alarm goes (set BUDGET_EMAIL in .env); defaults to the report inbox.
+BUDGET_EMAIL ?= $(firstword $(subst $(COMMA), ,$(REPORT_EMAIL)))
+# Text for `make parse`, or FILE=<path> to read it from a file.
+TEXT         ?=
+FILE         ?=
+
+.PHONY: llm-hello
+llm-hello: ## First call to Claude on Bedrock from the laptop: prints the answer, stop_reason and usage
+	cd back && PARSER_MODEL=$(PARSER_MODEL) uv run python -m app.ai.hello
+
+.PHONY: parse
+parse: ## Parse TEXT="..." (or FILE=notes.txt) into an agenda from the laptop; prints the JSON and the usage
+	@[ -n "$$TEXT" ] || [ -n "$(FILE)" ] || { echo 'Usage: make parse TEXT="Mon 10:00, pricing sync, 45 min ..." (or FILE=path)'; exit 1; }
+	@if [ -n "$(FILE)" ]; then \
+	  cd back && PARSER_MODEL=$(PARSER_MODEL) uv run python -m app.ai.agenda < "$(abspath $(FILE))"; \
+	else \
+	  cd back && PARSER_MODEL=$(PARSER_MODEL) uv run python -m app.ai.agenda "$$TEXT"; \
+	fi
+
+.PHONY: aws-ai-deploy
+aws-ai-deploy: aws-check aws-ai-stack aws-ai-outputs ## Deploy the parser and the budget (deploy the backend first: the parser runs its image), then rebuild the site with its URL
+	@$(MAKE) --no-print-directory aws-frontend-publish
+	@echo "Confirm the AWS Budgets email to $(BUDGET_EMAIL) if one arrives. Parse logs: make ai-logs"
+
+.PHONY: aws-ai-stack
+aws-ai-stack: ## Create/update the AI stack (PARSER_MODEL=anthropic.claude-haiku-5-5 to compare models)
+	@test -n "$(call backend_output,ImageUri)" || { echo "Backend not deployed: run \`make aws-backend-deploy\` first"; exit 1; }
+	@test -n "$(BUDGET_EMAIL)" || { echo "Set BUDGET_EMAIL (or REPORT_EMAIL) in .env: the budget alarm is emailed there"; exit 1; }
+	$(call clear_failed_stack,$(AI_STACK))
+	aws cloudformation deploy --stack-name $(AI_STACK) --template-file infra/ai.yml \
+	  --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset --tags $(STACK_TAGS) \
+	  --parameter-overrides ProjectName=$(PROJECT) \
+	    ImageUri=$(call backend_output,ImageUri) Architecture=$(call backend_output,Architecture) \
+	    CognitoUserPoolId=$(COGNITO_POOL_ID) CognitoClientId=$(COGNITO_CLIENT) \
+	    "CorsOrigins=$(CORS_ORIGINS_AWS)" ParserModel=$(PARSER_MODEL) "BudgetEmail=$(BUDGET_EMAIL)"
+
+.PHONY: aws-ai-outputs
+aws-ai-outputs: ## Show AI stack outputs (parser URL, function, model)
+	@aws cloudformation describe-stacks --stack-name $(AI_STACK) \
+	  --query "Stacks[0].Outputs[].[OutputKey, OutputValue]" --output table
+
+.PHONY: ai-logs
+ai-logs: ## The parser's "agenda_parsed" log lines of the last 7 days: model, prompt version, tokens, latency, cost
+	@aws logs filter-log-events --log-group-name /aws/lambda/$(PROJECT)-agenda-parser \
+	  --start-time $$(( ($$(date +%s) - 7*86400) * 1000 )) --filter-pattern '"agenda_parsed"' \
+	  --query 'events[].message' --output text | tr '\t' '\n'
+
+.PHONY: aws-ai-destroy
+aws-ai-destroy: aws-check ## Delete the AI stack (parser and budget)
+	@read -p "Delete stack $(AI_STACK) in $(AWS_REGION)? [y/N] " ok && [ "$$ok" = y ]
+	aws cloudformation delete-stack --stack-name $(AI_STACK)
+	aws cloudformation wait stack-delete-complete --stack-name $(AI_STACK)
+
 ##@ AWS (all parts)
 
 .PHONY: aws-deploy
 aws-deploy: aws-cognito-deploy aws-backend-deploy aws-frontend-deploy ## Deploy everything: Cognito, backend, then the frontend built with their IDs and URL
 
 .PHONY: aws-destroy
-aws-destroy: aws-reports-destroy aws-frontend-destroy aws-backend-destroy aws-cognito-destroy ## Delete everything on AWS (each stack asks first)
+aws-destroy: aws-ai-destroy aws-reports-destroy aws-frontend-destroy aws-backend-destroy aws-cognito-destroy ## Delete everything on AWS (each stack asks first)
 
 ##@ Help
 

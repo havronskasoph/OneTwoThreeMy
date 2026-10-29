@@ -15,6 +15,8 @@ dependencies = [
     "pyjwt[crypto]>=2.9",
     # Time zone data for zoneinfo: the Lambda base image has no system tz database.
     "tzdata>=2024.1",
+    # Claude on Amazon Bedrock (app.ai): the Messages API through bedrock-mantle.
+    "anthropic[bedrock]>=1.0",
 ]
 
 [dependency-groups]

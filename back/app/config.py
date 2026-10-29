@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     # Lab exercise "break it": the builder raises for this week, so its message ends in the DLQ.
     report_fail_week: str = ""
 
+    # Paste an agenda (app.ai): Claude on Bedrock turns pasted text into a suggested agenda.
+    # The model ID is configuration, so switching to Haiku is an environment change, not a code change.
+    parser_model: str = "anthropic.claude-opus-5-5"
+    bedrock_region: str = "us-east-1"
+    # Longer pasted text is rejected with 413 before any token is paid for.
+    parser_max_chars: int = 10_000
+
     @property
     def sqlalchemy_url(self) -> URL:
         if self.database_url:

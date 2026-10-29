@@ -4,6 +4,7 @@ import {
   ChevronRight,
   Clock,
   ExternalLink,
+  ListChecks,
   MapPin,
   Pencil,
   Trash2,
@@ -58,15 +59,30 @@ function useNow(): Date {
 interface MeetingActions {
   onEdit: (meeting: Meeting) => void
   onDelete: (meeting: Meeting) => void
+  onAgenda: (meeting: Meeting) => void
 }
 
-function MeetingDetails({ meeting, onEdit, onDelete }: { meeting: Meeting } & MeetingActions) {
+function MeetingDetails({
+  meeting,
+  onEdit,
+  onDelete,
+  onAgenda,
+}: { meeting: Meeting } & MeetingActions) {
   const start = new Date(meeting.starts_at)
   return (
     <div className="space-y-3 text-sm">
       <div className="flex items-start justify-between gap-2">
         <h4 className="text-base leading-snug font-semibold">{meeting.title}</h4>
         <div className="-mt-1 -mr-2 flex shrink-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={`Agenda of ${meeting.title}`}
+            title="Agenda"
+            onClick={() => onAgenda(meeting)}
+          >
+            <ListChecks />
+          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -105,6 +121,25 @@ function MeetingDetails({ meeting, onEdit, onDelete }: { meeting: Meeting } & Me
           Join call <ExternalLink className="size-3.5" />
         </a>
       )}
+      {meeting.agenda && (
+        <div className="flex items-start gap-2">
+          <ListChecks className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <ol className="list-decimal space-y-0.5 pl-4">
+            {meeting.agenda.items.map((item, i) => (
+              <li key={i}>
+                {item.topic}
+                {(item.owner || item.minutes) && (
+                  <span className="text-muted-foreground">
+                    {" "}
+                    —{" "}
+                    {[item.owner, item.minutes && `${item.minutes} min`].filter(Boolean).join(", ")}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
       {meeting.participants.length > 0 && (
         <div className="flex items-start gap-2">
           <Users className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
@@ -121,7 +156,12 @@ function MeetingDetails({ meeting, onEdit, onDelete }: { meeting: Meeting } & Me
   )
 }
 
-function MeetingBlock({ segment, onEdit, onDelete }: { segment: DaySegment } & MeetingActions) {
+function MeetingBlock({
+  segment,
+  onEdit,
+  onDelete,
+  onAgenda,
+}: { segment: DaySegment } & MeetingActions) {
   const [open, setOpen] = useState(false)
   const { meeting, startMin, endMin, column, columns } = segment
   // Close the details before handing over to the edit or delete dialog.
@@ -160,6 +200,7 @@ function MeetingBlock({ segment, onEdit, onDelete }: { segment: DaySegment } & M
           meeting={meeting}
           onEdit={closeThen(onEdit)}
           onDelete={closeThen(onDelete)}
+          onAgenda={closeThen(onAgenda)}
         />
       </PopoverContent>
     </Popover>
@@ -176,6 +217,7 @@ export function MeetingsCalendar({
   meetings,
   onEdit,
   onDelete,
+  onAgenda,
   onCreateAt,
 }: MeetingsCalendarProps) {
   const [view, setView] = useState<CalendarView>(initialView)
@@ -320,6 +362,7 @@ export function MeetingsCalendar({
                       segment={segment}
                       onEdit={onEdit}
                       onDelete={onDelete}
+                      onAgenda={onAgenda}
                     />
                   ))}
 

@@ -77,6 +77,13 @@ Nobody applies from a laptop. Locally: `make infra-init` (once, after `terraform
 6. Applied once (`Apply complete! Resources: 41 imported, 0 added, 4 changed, 0 destroyed.`), then
    `terraform plan` → **No changes**. `imports.tf` and the three templates were deleted.
 
+**After the switch to GitHub-driven runs.** The first run from a merge (PR #1) planned
+`1 to change`: `aws_lambda_function.mailer`. `archive_file` stores file permissions in the zip, and
+`index.py` is 0664 on the laptop but 0644 in HCP Terraform's checkout, so the hash differed. Applying
+it uploaded the same code again; `output_file_mode = "0644"` now makes the zip identical everywhere.
+PR #2 (the `ManagedBy = terraform` tag, `0 to add, 20 to change, 0 to destroy`) was the first change
+applied only by HCP Terraform after a merge.
+
 **Re-created:** none. Everything was imported, including the Lambda permissions and the bucket
 notification (their CloudFormation-generated statement IDs are kept in the code).
 

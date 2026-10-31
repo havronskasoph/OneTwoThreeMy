@@ -2,7 +2,7 @@ import { getIdToken } from "@/lib/auth"
 import type { ParseResult } from "@/types"
 
 /**
- * Client of the agenda parser (infra/ai.yml): a separate Lambda function URL outside the VPC that
+ * Client of the agenda parser (infra/ai.tf): a separate Lambda function URL outside the VPC that
  * asks Claude on Bedrock for a suggested agenda. It only reads text and returns JSON; saving goes
  * through the main API.
  */

@@ -1,0 +1,17 @@
+# What `terraform plan` from the laptop must not upload to HCP Terraform (the workspace's working
+# directory is infra/, so the CLI uploads the whole repository). Never upload secrets.
+.env
+.env.*
+!.env.example
+**/*.tfstate
+**/*.tfstate.*
+infra/bootstrap/
+infra/*_override.tf
+infra/.build/
+.git/
+**/.terraform/
+**/node_modules/
+**/.venv/
+front/dist/
+aws/
+awscliv2.zip

@@ -1,6 +1,6 @@
 """Agenda parser Lambda: POST {"text", "today", "tz"} to its function URL, get a suggested agenda back.
 
-Runs from the backend image with a different command (infra/ai.yml), outside the VPC: it needs
+Runs from the backend image with a different command (infra/ai.tf), outside the VPC: it needs
 Bedrock and Cognito's JWKS, never the database. Every call costs money, so it accepts only a valid
 Cognito ID token (401 otherwise) and rejects long text (413) before the model is called. CORS is
 answered by the function URL itself, so no CORS headers are added here.

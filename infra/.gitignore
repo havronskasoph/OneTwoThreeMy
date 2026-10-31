@@ -1,0 +1,13 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+generated.tf
+.build/
+# Local values for a laptop plan; secrets live in the HCP Terraform workspace.
+*.auto.tfvars
+
+# One-time migration from the laptop
+*_override.tf

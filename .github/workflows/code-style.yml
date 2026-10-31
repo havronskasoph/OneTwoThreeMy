@@ -64,7 +64,7 @@ jobs:
         run: npm run typecheck
 
   infra:
-    name: Infra (cfn-lint)
+    name: Infra (cfn-lint, terraform fmt/validate)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -73,3 +73,16 @@ jobs:
 
       - name: Lint CloudFormation templates
         run: uvx cfn-lint --format parseable infra/*.yaml
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.10"
+
+      # Plans and applies run in HCP Terraform; CI only checks style and validity, without a backend.
+      - name: Check Terraform formatting
+        run: terraform -chdir=infra fmt -check -recursive
+
+      - name: Validate Terraform
+        run: |
+          terraform -chdir=infra init -backend=false -input=false
+          terraform -chdir=infra validate

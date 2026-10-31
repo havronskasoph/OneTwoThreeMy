@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
     seed: bool = False
 
-    # Cognito user pool whose ID tokens the API accepts (`make aws-cognito-deploy` fills these in).
+    # Cognito user pool whose ID tokens the API accepts (`make aws-cognito-env` prints them).
     # Empty pool ID = auth disabled: every request acts as one local user (local development, tests).
     cognito_region: str = "us-east-1"
     cognito_user_pool_id: str = ""
@@ -31,7 +31,7 @@ class Settings(BaseSettings):
 
     # Weekly report (app.reports): weeks run Monday to Sunday in this time zone.
     report_timezone: str = "Europe/Kyiv"
-    # Bucket the report builder Lambda writes reports/<week>.csv to (infra/reports.yaml sets it).
+    # Bucket the report builder Lambda writes reports/<week>.csv to (infra/reports.tf sets it).
     reports_bucket: str = ""
     # Lab exercise "break it": the builder raises for this week, so its message ends in the DLQ.
     report_fail_week: str = ""

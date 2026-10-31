@@ -313,6 +313,9 @@ data "archive_file" "mailer" {
   type        = "zip"
   source_file = "${path.module}/lambda/report_mailer/index.py"
   output_path = "${path.module}/.build/report_mailer.zip"
+  # The zip records file permissions: 0664 on a laptop, 0644 in HCP Terraform's checkout. Fixing
+  # them keeps the hash, and the plan, the same wherever it runs.
+  output_file_mode = "0644"
 }
 
 resource "aws_lambda_function" "mailer" {

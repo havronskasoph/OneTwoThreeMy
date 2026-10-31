@@ -1,6 +1,6 @@
 """Report builder Lambda: builds one week's CSV and stores it at s3://$REPORTS_BUCKET/reports/<week>.csv.
 
-Runs from the backend image with a different command (infra/reports.yaml). It accepts two event shapes:
+Runs from the backend image with a different command (infra/reports.tf). It accepts two event shapes:
 - an SQS event from the report-requests queue (the schedule and `make report-now` send there),
   each record's body being {"week": "2026-W40" | null, "source": "schedule" | "make" | ...};
 - a direct invocation with that same payload as the event (`aws lambda invoke`, or a schedule

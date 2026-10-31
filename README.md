@@ -50,7 +50,7 @@ front/            # Vite + React + TypeScript + Tailwind + shadcn/ui
     lib/api.ts    # typed fetch wrapper (VITE_API_URL = backend origin, empty = same origin)
     lib/parser.ts # agenda parser client (VITE_PARSER_URL; empty = Paste an agenda hidden)
   nginx.conf      # serves the SPA, proxies /api to backend
-infra/            # CloudFormation: cognito, backend-ecr, backend (Lambda + Aurora), frontend (S3 + CloudFront), reports, ai
+infra/            # Terraform (*.tf): auth, reports, ai; CloudFormation (*.yaml): backend-ecr, backend, frontend
 ```
 
 ## API
@@ -94,12 +94,13 @@ Google is required. Once, in the Google Cloud console:
    can sign in).
 2. Clients → Create client → **Web application**, with the origin and redirect URI that
    `make aws-cognito-google` prints (they point to Cognito's domain, not to the site).
-3. Put the client ID and secret in `.env` as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` (`.env` is
-   gitignored; the secret goes to CloudFormation as a `NoEcho` parameter, never into the frontend).
+3. Put the client ID in `infra/terraform.tfvars` (`google_client_id`) and the secret in the HCP
+   Terraform workspace as the sensitive variable `google_client_secret` (never in a file, never in
+   the frontend). For local tools keep both in `.env` as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
 
 ```bash
-make aws-cognito-deploy   # user pool, app client, Google provider, domain, managed login style
-make aws-frontend-deploy  # rebuild the site with the pool's IDs, register its callback URLs
+# user pool, app client, Google provider, domain, managed login style: infra/auth.tf, applied by HCP Terraform
+make aws-frontend-deploy  # rebuild the site with the pool's IDs
 ```
 
 Then open `<site>/login/`. For local use, paste the `COGNITO_*` lines that `make aws-cognito-env`
@@ -153,16 +154,25 @@ Config lives in `back/pyproject.toml` (`[tool.ruff]`), `front/eslint.config.js` 
 
 ## Deploy to AWS (backend on Lambda + Aurora Serverless, frontend on CloudFront)
 
-Everything is deployed to **us-east-1**. CloudFront accepts custom-domain certificates only from that region. Infrastructure is CloudFormation in `infra/`:
+Everything is deployed to **us-east-1**. CloudFront accepts custom-domain certificates only from that region. Infrastructure is code in `infra/`, in two tools.
 
-- `infra/cognito.yaml`: Cognito user pool (Essentials; email + password with self sign-up and email code), Google identity provider, public app client (code flow + PKCE), prefix domain with managed login v2 and its default branding.
+**Terraform** (`infra/*.tf`, one root module, state and runs in the HCP Terraform workspace `meetings-dev`; see [ADR 0007](docs/adr/0007-terraform.md) and [docs/terraform.md](docs/terraform.md)):
+
+- `infra/auth.tf`: Cognito user pool (Essentials; email + password with self sign-up and email code), Google identity provider, public app client (code flow + PKCE), prefix domain with managed login v2 and its default branding.
+- `infra/reports.tf`: the weekly meetings report. EventBridge Scheduler → SQS (with a DLQ) → builder Lambda (backend image, in the VPC) → S3 via a gateway endpoint → mailer Lambda ([infra/lambda/report_mailer/](infra/lambda/report_mailer/index.py)) → SES. `make report-now WEEK=2026-W40`; see [docs/weekly-report.md](docs/weekly-report.md).
+- `infra/ai.tf`: Paste an agenda. The agenda-parser Lambda (backend image, outside the VPC) behind a Cognito-authenticated function URL calls Claude on Amazon Bedrock and returns a suggested agenda; saving goes through the API. Plus a $5/month AWS Budgets alarm. `make llm-hello`, `make parse TEXT="…"`, `make ai-logs`; see [docs/ai-agenda.md](docs/ai-agenda.md) and [ADR 0006](docs/adr/0006-llm-agenda-parsing.md).
+- `infra/main.tf` reads the CloudFormation stacks' outputs (VPC, database, image, site origins); `variables.tf`, `outputs.tf`, `terraform.tfvars` (non-secret values only; the repository is public).
+- `infra/bootstrap/`: the IAM OIDC provider and role that HCP Terraform runs assume (applied once from a laptop).
+
+Changes reach AWS only through HCP Terraform: a pull request that touches `infra/` gets a plan as a check, and a merge to `main` applies it. The Makefile never applies: `make infra-init` (once, after `terraform login`), `make infra-plan` (a speculative plan with your local files), `make infra-outputs`, `make infra-fmt`, `make infra-validate`.
+
+**CloudFormation** (unchanged, deployed by the Makefile):
+
 - `infra/backend-ecr.yaml`: ECR repository for the backend's Lambda container image (`back/Dockerfile.lambda`).
 - `infra/backend.yaml`: VPC with private subnets, Aurora Serverless v2 PostgreSQL (scales to 0 ACU when idle), and a Lambda function with a public **function URL**, which is the backend URL.
 - `infra/frontend.yaml`: private S3 bucket and CloudFront distribution for the SPA on the **flat-rate Free plan** ($0/month, with the WAF web ACL the plan requires), with an optional custom domain.
-- `infra/ai.yml`: Paste an agenda. The agenda-parser Lambda (backend image, outside the VPC) behind a Cognito-authenticated function URL calls Claude on Amazon Bedrock and returns a suggested agenda; saving goes through the API. Plus a $5/month AWS Budgets alarm. `make llm-hello`, `make parse TEXT="…"`, `make aws-ai-deploy`, `make ai-logs`; see [docs/ai-agenda.md](docs/ai-agenda.md) and [ADR 0006](docs/adr/0006-llm-agenda-parsing.md).
-- `infra/reports.yaml`: the weekly meetings report. EventBridge Scheduler → SQS (with a DLQ) → builder Lambda (backend image, in the VPC) → S3 via a gateway endpoint → mailer Lambda → SES. `make aws-reports-deploy`, `make report-now WEEK=2026-W40`; see [docs/weekly-report.md](docs/weekly-report.md).
 
-Every resource carries the tag `PROJECT_NAME=<project>`. It is set in the templates and as a stack tag, and `cert.sh` puts it on the ACM certificate. Some resource types can't be tagged in AWS at all: function URLs, Lambda permissions, the bucket policy, the CloudFront origin access control, Route 53 records and the pricing plan subscription.
+Every resource carries the tag `PROJECT_NAME=<project>`. It is set by the AWS provider's `default_tags` in Terraform, in the CloudFormation templates and as a stack tag, and `cert.sh` puts it on the ACM certificate. Some resource types can't be tagged in AWS at all: function URLs, Lambda permissions, the bucket policy, the CloudFront origin access control, Route 53 records and the pricing plan subscription.
 
 ```mermaid
 flowchart LR
@@ -175,6 +185,8 @@ flowchart LR
     B -->|"HTTPS, CORS: parse pasted text"| PURL[Parser function URL]
     PURL --> PL[Agenda parser Lambda<br/>outside the VPC]
     PL -->|Messages API| BR[Amazon Bedrock<br/>Claude]
+    GH[GitHub<br/>pull request, merge] -->|VCS trigger| HCP[HCP Terraform<br/>plan, apply, state]
+    HCP -->|"OIDC, short-lived role: Cognito, reports, parser"| API[AWS APIs]
     PL -. image .-> ECR
 ```
 
@@ -189,12 +201,12 @@ flowchart LR
 3. Deploy. The first run takes about 15 minutes, mostly waiting for Aurora and CloudFront:
 
    ```bash
-   make aws-deploy   # = aws-cognito-deploy, aws-backend-deploy, then aws-frontend-deploy
+   make aws-deploy   # = aws-backend-deploy, then aws-frontend-deploy
    ```
 
    The steps run in this order:
 
-   1. **Cognito** (`make aws-cognito-deploy`): user pool, Google provider, app client and managed login domain. Redirect URLs cover localhost and the site's origins. It prints the `.env` lines for local use.
+   1. **Terraform** (HCP Terraform, workspace `meetings-dev`): Cognito, the weekly report and the agenda parser. Redirect URLs and CORS cover localhost and the site's origins. A first-time setup also needs `infra/bootstrap/` (see [docs/terraform.md](docs/terraform.md)); `make aws-cognito-env` prints the `.env` lines for local use.
    2. **Backend** (`make aws-backend-deploy`): ECR stack → build and push the Lambda image → backend stack → `aws-backend-migrate` invokes the function with `{"action": "migrate"}` to run Alembic and seeding. It prints the function URL (`https://<id>.lambda-url.us-east-1.on.aws/`).
    3. **Frontend** (`make aws-frontend-deploy`): frontend stack → `npm run build` with `VITE_API_URL=<function URL>` and the `VITE_COGNITO_*` IDs → upload to S3 and invalidate CloudFront → allow the site's origin in the backend's `CORS_ORIGINS` and as a Cognito redirect URL. It prints the site URL.
 

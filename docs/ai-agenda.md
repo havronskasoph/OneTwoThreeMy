@@ -12,7 +12,7 @@ suggests and the person decides. Decision record: [adr/0006-llm-agenda-parsing.m
 | First call (`make llm-hello`) | [back/app/ai/hello.py](../back/app/ai/hello.py) |
 | Saving: `PUT /api/meetings/{id}/agenda`, `agenda` + `agenda_ai_suggestion` JSONB | [back/app/services/meetings.py](../back/app/services/meetings.py), migration [0004](../back/alembic/versions/0004_meeting_agenda.py) |
 | Screen: paste, progress + Cancel, suggested badges, errors, Save | [front/src/components/AgendaDialog.tsx](../front/src/components/AgendaDialog.tsx), [front/src/lib/parser.ts](../front/src/lib/parser.ts) |
-| Everything on AWS (stack `meetings-ai`): function, URL + CORS, role, logs, $5 budget | [infra/ai.yml](../infra/ai.yml) |
+| Everything on AWS (Terraform): function, URL + CORS, role, logs, $5 budget | [infra/ai.tf](../infra/ai.tf) |
 | Tests | [test_agenda.py](../back/tests/test_agenda.py), [test_agenda_lambda.py](../back/tests/test_agenda_lambda.py), [AgendaDialog.test.tsx](../front/src/test/AgendaDialog.test.tsx) |
 | The five Step 5 inputs | [ai-agenda-inputs/](ai-agenda-inputs/) |
 
@@ -53,7 +53,7 @@ make parse TEXT="Mon 10:00 pricing sync, 45 min: 1) Pro tiers - Olena 2) feedbac
 make parse FILE=… PARSER_MODEL=anthropic.claude-haiku-5-5   # compare a cheaper model
 
 make aws-backend-deploy      # new image (with app.ai) + migration 0004 (ARCH=amd64 without arm64 emulation)
-make aws-ai-deploy           # stack meetings-ai, then rebuilds the site with VITE_PARSER_URL
+# infra/ai.tf is applied by HCP Terraform; then `make aws-frontend-publish` builds VITE_PARSER_URL in
 make ai-logs                 # the agenda_parsed log lines: model, prompt version, tokens, latency, cost
 ```
 

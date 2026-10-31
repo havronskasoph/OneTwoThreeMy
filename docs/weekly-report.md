@@ -22,8 +22,8 @@ make report-now ───────┴─> SQS report-requests ──(3 failur
 |---|---|
 | The report itself (no AWS) | [back/app/reports/weekly.py](../back/app/reports/weekly.py) |
 | Builder handler (schedule / SQS / direct) | [back/app/reports/lambda_handler.py](../back/app/reports/lambda_handler.py) |
-| Mailer handler (S3 event), inline | `MailerFunction` in [infra/reports.yaml](../infra/reports.yaml) |
-| Everything on AWS | [infra/reports.yaml](../infra/reports.yaml) (stack `meetings-reports`) |
+| Mailer handler (S3 event) | [infra/lambda/report_mailer/index.py](../infra/lambda/report_mailer/index.py) |
+| Everything on AWS | [infra/reports.tf](../infra/reports.tf) (Terraform, workspace `meetings-dev` in HCP Terraform) |
 | Tests | [back/tests/test_reports.py](../back/tests/test_reports.py) |
 
 The report has: number of meetings and total hours for the week, the same for the week before and
@@ -41,12 +41,12 @@ overwrites the same object.
 make start
 make report-local WEEK=2026-W40
 
-# 1. .env: the inbox to send to (SES emails it a verification link; click it)
-REPORT_EMAIL=you@example.com
+# 1. The inbox to send to: the report_recipients variable of the HCP Terraform workspace
+#    (SES emails it a verification link; click it)
 
-# 2. Deploy: the backend first (new image with app/reports, route table, outputs), then the report stack
+# 2. Deploy: the backend first (new image with app/reports, route table, outputs), then a run of
+#    infra/ in HCP Terraform (push or merge a change to infra/, or start a run in the workspace)
 make aws-backend-deploy
-make aws-reports-deploy
 #    -> click "verify" in the SES email and "Confirm subscription" in the SNS alarm email
 
 # 3. On demand (trigger: SQS, then S3)
@@ -54,17 +54,15 @@ make report-now WEEK=2026-W41
 make report-ls            # aws s3 ls s3://meetings-reports-<account>/reports/ --recursive
 make report-logs
 
-# 4. The schedule (trigger: schedule): run every 5 minutes once, then put it back
-make aws-reports-stack REPORT_SCHEDULE='rate(5 minutes)'
-#    wait for one run, then:
-make aws-reports-stack
+# 4. The schedule (trigger: schedule): set the workspace variable schedule_expression to
+#    rate(5 minutes) and start a run; wait for one report, then delete the variable and run again
 make report-triggers      # the three "triggered" lines: schedule, sqs, s3
 
 # 5. Break it: the builder raises for one week -> 3 attempts -> DLQ (and the alarm emails you)
-make aws-reports-stack REPORT_FAIL_WEEK=2026-W30
+#    workspace variable report_fail_week = 2026-W30, then a run in HCP Terraform
 make report-now WEEK=2026-W30
 make report-queues        # after a few minutes (visibility timeout is 12 min per attempt): DLQ waiting=1
-make aws-reports-stack    # "fix the code"
+#    "fix the code": delete report_fail_week, run again
 make report-redrive       # or SQS console > report-requests-dlq > Start DLQ redrive
 ```
 
